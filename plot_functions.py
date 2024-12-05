@@ -8,6 +8,7 @@ import pandas as pd
 
 def calculate_slot_metrics(df):
     ref_date = pd.to_datetime("2024-12-01")
+    df["appointment_date"] = pd.to_datetime(df["appointment_date"], errors="coerce")
     before_ref = df[df["appointment_date"] < ref_date]
     total_slots_before_ref = len(before_ref)
     non_available_before_ref = len(before_ref[before_ref["is_available"] == False])

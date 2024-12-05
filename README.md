@@ -1,1 +1,1 @@
-# EDA-Medical-appointment-system
+# Exploratory Data Analysis of Medical Appointment System

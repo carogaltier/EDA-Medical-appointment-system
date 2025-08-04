@@ -407,41 +407,48 @@ def plot_scheduling_interval_distribution(df):
         boxstyle=f"round,pad=0,rounding_size={border_radius}"
     )
     fig.patches.extend([rect])
-    
+
     scheduling_intervals = df['scheduling_interval']
-    bins = range(scheduling_intervals.min(), scheduling_intervals.max() +1 )
+    
+    # 🔧 Ajuste importante: asegurar bin para el valor máximo incluido
+    bins = np.arange(scheduling_intervals.min(), scheduling_intervals.max() + 2)
+
     counts, edges = np.histogram(scheduling_intervals, bins=bins)
     percentages = (counts / scheduling_intervals.size) * 100
-    
-    valid_bins = [(x, count, percentage) for x, count, percentage in zip(edges[:-1], counts, percentages) if percentage >= 0.1]
+
+    valid_bins = [(int(x), int(count), percentage)
+                  for x, count, percentage in zip(edges[:-1], counts, percentages)
+                  if percentage >= 0.1]
+
     valid_x = [x for x, _, _ in valid_bins]
     valid_counts = [count for _, count, _ in valid_bins]
     valid_percentages = [percentage for _, _, percentage in valid_bins]
-    
+
     fig.suptitle(
         'How Far in Advance Do Patients Schedule?',
         fontsize=12, x=0.2, y=1.04, ha="center", fontweight='bold'
     )
-    
+
     plt.bar(
         valid_x, valid_counts, width=1, align='center',
         edgecolor='#fafafa', color='#67A7D4'
     )
-    
-    ax.set_xticks(bins[:-1])
-    ax.set_xticklabels([int(b) for b in bins[:-1]], ha="center")
+
+    ax.set_xticks(valid_x)
+    ax.set_xticklabels(valid_x, ha="center")
     ax.set_ylabel('Number of Appointments', labelpad=10)
     plt.xlabel('Scheduling Interval (Days)', labelpad=10)
     ax.spines[['right', 'top']].set_visible(False)
     ax.grid(axis="y", linestyle="--", alpha=0.7, zorder=-1)
     plt.subplots_adjust(bottom=0.25)
+
     for x, count, percentage in zip(valid_x, valid_counts, valid_percentages):
         plt.text(
             x, count + (max(valid_counts) * 0.02),
             f"{percentage:.1f}%", fontsize=8, fontweight='bold',
             color='#222', ha='center'
         )
-    
+
     plt.show()
 
 
@@ -635,6 +642,7 @@ def plot_arrival_time_distribution(df):
             color='#222', ha='center'
         )
     plt.show()
+
 
 
 

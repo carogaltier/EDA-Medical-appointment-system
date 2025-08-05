@@ -733,7 +733,7 @@ def plot_scheduling_interval_distribution(df: pd.DataFrame) -> None:
     fig.patches.append(rect)
 
     scheduling_intervals = df['scheduling_interval']
-    bins = range(scheduling_intervals.min(), scheduling_intervals.max() + 1)
+    bins = range(scheduling_intervals.min(), scheduling_intervals.max() + 2)
     counts, edges = np.histogram(scheduling_intervals, bins=bins)
     percentages = (counts / scheduling_intervals.size) * 100
 
@@ -1073,3 +1073,4 @@ def plot_arrival_time_distribution(df: pd.DataFrame) -> None:
         )
 
     plt.show()
+

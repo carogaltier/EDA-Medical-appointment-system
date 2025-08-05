@@ -24,7 +24,19 @@
 # Repository: https://github.com/carogaltier/Synthetic-Medical-Appointment-Dataset
 # =====================================================================================
 
+# Core Libraries
+import pandas as pd
+import numpy as np
+import random
+from datetime import datetime, timedelta, date, time
+from typing import List, Tuple, Optional
 
+# Visualization
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Synthetic Data
+from faker import Faker
 
 # ---------------------------------------------------------------------------------------------------
 # NHS Outpatient Data Parser (Optional Reference)
@@ -1269,5 +1281,6 @@ class AppointmentScheduler:
 
         # Assign patients to appointments
         self.assign_patients()
+
 
         return self.slots_df, self.appointments_df, self.patients_df

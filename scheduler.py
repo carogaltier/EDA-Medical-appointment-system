@@ -27,7 +27,6 @@
 # Libraries
 import pandas as pd
 import numpy as np
-import random
 from datetime import datetime, timedelta, date, time
 from typing import List, Tuple, Optional
 from faker import Faker
@@ -1278,4 +1277,5 @@ class AppointmentScheduler:
 
 
         return self.slots_df, self.appointments_df, self.patients_df
+
 

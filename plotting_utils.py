@@ -28,12 +28,10 @@
 # Repository: https://github.com/carogaltier/Synthetic-Medical-Appointment-Dataset
 # =====================================================================================
 
-
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import numpy as np
 import pandas as pd
-
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
 # ---------------------------------------------------------------
 # Slot Metrics Summary
@@ -1073,4 +1071,3 @@ def plot_arrival_time_distribution(df: pd.DataFrame) -> None:
         )
 
     plt.show()
-

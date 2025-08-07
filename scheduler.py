@@ -21,12 +21,18 @@
 # =====================================================================================
 
 # Libraries
+import warnings
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, date, time
 from typing import List, Tuple, Optional
 from faker import Faker
-
+from .constants import (
+    DEFAULT_STATUS_RATES,
+    DEFAULT_FIRST_ATTENDANCE_RATIO,
+    DEFAULT_AGE_GENDER_PROBS
+)
+from itertools import product
 
 # -------------------------------------------------------------------------------------
 # Default Parameter Estimates
@@ -46,37 +52,7 @@ from faker import Faker
 # runtime dependencies on external Excel files.
 # -------------------------------------------------------------------------------------
 
-DEFAULT_AGE_GENDER_PROBS = [
-    {"age_yrs": "0-4", "total_female": 0.01413, "total_male": 0.01794},
-    {"age_yrs": "5-9", "total_female": 0.01140, "total_male": 0.01409},
-    {"age_yrs": "10-14", "total_female": 0.01318, "total_male": 0.01459},
-    {"age_yrs": "15-19", "total_female": 0.01738, "total_male": 0.01348},
-    {"age_yrs": "20-24", "total_female": 0.02326, "total_male": 0.01010},
-    {"age_yrs": "25-29", "total_female": 0.03988, "total_male": 0.01208},
-    {"age_yrs": "30-34", "total_female": 0.05164, "total_male": 0.01449},
-    {"age_yrs": "35-39", "total_female": 0.04369, "total_male": 0.01591},
-    {"age_yrs": "40-44", "total_female": 0.03240, "total_male": 0.01754},
-    {"age_yrs": "45-49", "total_female": 0.02902, "total_male": 0.01861},
-    {"age_yrs": "50-54", "total_female": 0.03684, "total_male": 0.02513},
-    {"age_yrs": "55-59", "total_female": 0.04172, "total_male": 0.03249},
-    {"age_yrs": "60-64", "total_female": 0.04188, "total_male": 0.03723},
-    {"age_yrs": "65-69", "total_female": 0.03939, "total_male": 0.03822},
-    {"age_yrs": "70-74", "total_female": 0.04026, "total_male": 0.03995},
-    {"age_yrs": "75-79", "total_female": 0.04395, "total_male": 0.04334},
-    {"age_yrs": "80-84", "total_female": 0.03090, "total_male": 0.02876},
-    {"age_yrs": "85-89", "total_female": 0.02015, "total_male": 0.01745},
-    {"age_yrs": "90+", "total_female": 0.01040, "total_male": 0.00716},
-]
 
-
-DEFAULT_STATUS_RATES = {
-    "attended": 0.773,
-    "cancelled": 0.164,
-    "did not attend": 0.059,
-    "unknown": 0.004
-}
-
-DEFAULT_FIRST_ATTENDANCE_RATIO = 0.325
 
 class AppointmentScheduler:
     """
@@ -151,8 +127,8 @@ class AppointmentScheduler:
     check_in_time_mean : float
         Average number of minutes before or after the scheduled time that patients arrive.
         Negative values indicate early arrivals (e.g., -10 means 10 minutes early).
-        Must be between -60 and +30.
-        Default: -10
+        The variability is modeled using a fixed standard deviation of 9.8 minutes.
+        Must be between -60 and +30. Default: -10
 
     visits_per_year : float
         Average number of outpatient visits per patient per year.
@@ -376,7 +352,6 @@ class AppointmentScheduler:
         self.median_lead_time = median_lead_time
 
         if self.booking_horizon >= 10 and self.median_lead_time < 2:
-            import warnings
             warnings.warn(
                 "`median_lead_time` is very short compared to `booking_horizon`. "
                 "This may produce unnatural scheduling intervals."
@@ -516,7 +491,10 @@ class AppointmentScheduler:
         self.patient_id_counter = 1
 
         self.total_days = sum((end - start).days + 1 for start, end in self.date_ranges)
-        self.slots_per_day = len(self.working_hours) * self.appointments_per_hour * (self.working_hours[0][1] - self.working_hours[0][0])
+        self.slots_per_day = sum(
+            (end - start) * self.appointments_per_hour
+            for start, end in self.working_hours
+        )
         self.working_days_count = sum(1 for date_day in pd.date_range(self.date_ranges[0][0], self.date_ranges[-1][1]) if date_day.weekday() in self.working_days)
         self.slots_per_week = self.slots_per_day * len(self.working_days)
 
@@ -563,9 +541,56 @@ class AppointmentScheduler:
                                     "is_available": True
                                 })
                                 slot_id_counter += 1
-
         slots_df = pd.DataFrame(slots)
         slots_df["appointment_date"] = pd.to_datetime(slots_df["appointment_date"])
+        return slots_df
+
+    def generate_slots_optimized(self) -> pd.DataFrame:
+        """
+        Generate all available appointment slots based on configured working hours, days, and date ranges.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with one row per slot. Each slot corresponds to a specific time block on a working day.
+
+        Columns
+        -------
+        - slot_id : str
+            Unique identifier for the slot (zero-padded).
+        - appointment_date : datetime
+            Date of the appointment slot.
+        - appointment_time : time
+            Start time of the slot.
+        - is_available : bool
+            True if the slot is available for booking. All slots are initialized as available.
+        """
+
+        # Get all working dates across date_ranges
+        all_working_dates = []
+        for start_date, end_date in self.date_ranges:
+            days = pd.date_range(start=start_date, end=end_date)
+            working_days = days[days.weekday.isin(self.working_days)]
+            all_working_dates.extend(working_days)
+
+        # Build time blocks for a single working day
+        slot_minutes = []
+        for start_hour, end_hour in self.working_hours:
+            for hour in range(start_hour, end_hour):
+                for m in range(0, 60, 60 // self.appointments_per_hour):
+                    slot_minutes.append(time(hour=hour, minute=m))
+
+        # Cartesian product: dates × time slots
+        all_combinations = list(product(all_working_dates, slot_minutes))
+        total_slots = len(all_combinations)
+        max_digits = len(str(total_slots)) + 1
+
+        # Vectorized construction
+        slots_df = pd.DataFrame(all_combinations, columns=["appointment_date", "appointment_time"])
+        slots_df["slot_id"] = [str(i).zfill(max_digits) for i in range(1, total_slots + 1)]
+        slots_df["is_available"] = True
+        slots_df["appointment_date"] = pd.to_datetime(slots_df["appointment_date"])
+
         return slots_df
 
 
@@ -986,15 +1011,8 @@ class AppointmentScheduler:
 
         This method models punctuality based on outpatient clinic observations:
         - ~84.4% of patients arrive early (Cerruti et al., 2023).
-        - The average arrival time is 10 minutes before the scheduled slot.
-        - A normal distribution controls variability in arrival offsets.
-
-        Parameters
-        ----------
-        appointment_date : datetime.date
-            Date of the scheduled appointment.
-        appointment_time : datetime.time
-            Scheduled start time of the appointment.
+        - The average arrival time is 10 minutes before the scheduled slot (mode ≈ -10).
+        - A normal distribution is used for variability around the mean.
 
         Returns
         -------
@@ -1003,9 +1021,14 @@ class AppointmentScheduler:
         """
         scheduled_dt = datetime.combine(appointment_date, appointment_time)
 
-        # Empirical punctuality distribution
-        mean_offset_min = self.check_in_time_mean  # e.g., -10 mins (early)
-        std_offset_min = 9.8  # Derived from clinic-level std deviation
+        # Although punctuality is not strictly normally distributed (Cerruti et al., 2023),
+        # we approximate it using a normal distribution centered on `check_in_time_mean`
+        # with a fixed standard deviation of 9.8 minutes.
+        # This ensures ~95% of arrivals fall within ±20 minutes around the mean,
+        # producing plausible and stable arrival behavior across configurations.
+
+        mean_offset_min = self.check_in_time_mean
+        std_offset_min = 9.8  # Fixed std for ~95% within ±20 min
 
         offset = np.random.normal(loc=mean_offset_min, scale=std_offset_min)
         check_in_dt = scheduled_dt + timedelta(minutes=offset)

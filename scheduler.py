@@ -90,141 +90,418 @@ class AppointmentScheduler:
     ----------
     date_ranges : list of (datetime, datetime), optional
         List of date intervals during which appointments can be scheduled.
-        Default: [(2015-01-01, 2024-12-31)]
+        Each tuple must be in the format (start, end) with start < end.
+        Ranges must not overlap and must span at least one day.
+        Default: [(2023-01-01, 2024-12-31)]
+
+    ref_date : datetime, optional
+        Reference date that splits past vs. future appointments.
+        Must be a datetime object falling within the `date_ranges` period.
+        If not provided, the last day of the latest date_range is used.
+        If `ref_date + booking_horizon` exceeds the last range, it is extended.
 
     working_days : list of int, optional
         Weekdays when the clinic operates (0=Monday, ..., 6=Sunday).
+        Must be a non-empty list of unique integers between 0 and 6.
         Default: [0, 1, 2, 3, 4]
 
+    appointments_per_hour : int
+        Number of bookable appointments per hour (determines slot duration).
+        Must divide 60 evenly. Accepted values are: 1 (60 min), 2 (30 min), 3 (20 min),
+        4 (15 min), 6 (10 min). Default: 4
+
     working_hours : list of (int, int), optional
-        Time blocks of daily working hours (e.g., [(8, 18)] for 8:00 to 18:00).
+        Time blocks of daily working hours (e.g., [(8, 12), (14, 18)]).
+        Each segment must be between 0 and 24, with start < end.
+        Segments must not overlap and must allow for at least one slot
+        given the `appointments_per_hour`.
         Default: [(8, 18)]
 
-    appointments_per_hour : int
-        Number of bookable appointments per hour (defines slot duration).
-        Default: 4 (i.e., 15-minute slots)
 
     fill_rate : float
         Target proportion of available slots that are eventually booked and attended.
+        Must be between 0.2 and 1.0. Values below 0.2 imply implausibly low utilization
+        and are likely to yield unrealistic or unstable scheduling behavior.
         Default: 0.9
 
     booking_horizon : int
         Maximum number of days into the future that appointments can be scheduled.
+        Must be an integer between 0 and 150 (approx. 5 months).
+        If set to 0, only historical appointments will be simulated.
         Default: 30
-
-    ref_date : datetime, optional
-        Reference date to split past vs. future appointments. Used in simulation.
-        Default: 2024-12-01
-
-    seed : int
-        Random seed for reproducibility.
-        Default: 42
-
-    noise : float
-        Magnitude of random variation to introduce in population and attendance behavior.
-        Default: 0.05
 
     median_lead_time : int
         Median number of days between scheduling and appointment date.
+        Must be at least 1 and cannot exceed the booking_horizon.
+        Used to control the exponential distribution of lead times.
         Default: 10
-
+        
     status_rates : dict, optional
-        Dictionary of outcome probabilities:
-        { "attended", "cancelled", "did not attend", "unknown" }
-        If not provided, uses NHS defaults.
+        Dictionary specifying the probability distribution of appointment outcomes for past slots.
+        Must contain exactly the following keys: {"attended", "cancelled", "did not attend", "unknown"}.
+        Values must be non-negative and will be normalized to sum to 1.
+        If not provided, defaults are derived from NHS outpatient statistics.
+        Default: {"attended": 0.773, "cancelled": 0.164, "did not attend": 0.059, "unknown": 0.004}
 
     rebook_category : str
-        Rebooking intensity after cancellations. Options: {"min", "med", "max"}.
+        Controls the intensity of rebooking behavior after cancellations.
+        Must be one of: {"min", "med", "max"}, corresponding to 0%, 50%, or 100% of cancelled appointments being rescheduled.
         Default: "med"
 
     check_in_time_mean : float
-        Mean number of minutes before appointment that patients arrive.
+        Average number of minutes before or after the scheduled time that patients arrive.
+        Negative values indicate early arrivals (e.g., -10 means 10 minutes early).
+        Must be between -60 and +30.
         Default: -10
 
     visits_per_year : float
-        Average number of visits per patient per year.
+        Average number of outpatient visits per patient per year.
+        Must be between 0.5 and 10. This value controls the volume of patients needed to fulfill all appointments.
         Default: 1.2
 
+    first_attendance : float, optional
+        Proportion of patients in each year who are first-time visitors (i.e., not previously seen).
+        Must be a float between 0 and 1. If None, a default value derived from NHS statistics (0.325) is used.
+        Default: None
+
     bin_size : int
-        Size (in years) of age group intervals.
+        Width (in years) of age group intervals used for binning patients in age-based analyses.
+        Must be an integer between 1 and 20. For example, bin_size=5 yields age groups like 15–19, 20–24, etc.
         Default: 5
 
     lower_cutoff : int
-        Minimum age of patients to be included.
-        Default: 15
+        Minimum patient age to include in the simulation.
+        Patients younger than this age are excluded or ignored depending on the `truncated` flag.
+        Must be less than `upper_cutoff`. Default: 15
 
     upper_cutoff : int
-        Maximum age of patients to be included.
-        Default: 90
+        Maximum patient age for inclusion in the cohort.
+        Used when sampling ages from demographic distributions.
+        Must be greater than `lower_cutoff`. Default: 90
 
     truncated : bool
-        Whether to exclude patients below the lower_cutoff.
+        Whether to exclude all age bins below `lower_cutoff` from the age-gender distribution entirely.
+        If True, patients under `lower_cutoff` are not generated at all.
+        If False, the full distribution is used but ages are clipped at runtime.
         Default: True
 
-    first_attendance : float, optional
-        Annual proportion of patients that are first-time visitors.
-        If None, uses NHS default (0.325)
+    age_gender_probs : pandas.DataFrame, optional
+        External age-sex probability table. If not provided, a default NHS-based distribution is used.
+        The DataFrame must contain columns: "age_yrs", "total_male", "total_female".
+        Default: None
+    
+    seed : int
+        Random seed for reproducibility. Must be a non-negative integer.
+        A fixed seed ensures the same synthetic dataset is generated every time.
+        Default: 42
 
-    age_gender_probs : pd.DataFrame, optional
-        Demographic probabilities by age and sex. If None, uses NHS defaults.
+    noise : float
+        Magnitude of random variation to introduce in patient generation,
+        appointment timing, attendance, and rebooking behavior.
+        Must be between 0 and 1. Default: 0.1
+
     """
 
     def __init__(self,
-                 date_ranges: Optional[List[Tuple[datetime, datetime]]] = None,
-                 working_days: Optional[List[int]] = None,
-                 working_hours: Optional[List[Tuple[int, int]]] = None,
-                 appointments_per_hour: int = 4,
-                 fill_rate: float = 0.9,
-                 booking_horizon: int = 30,
-                 ref_date: Optional[datetime] = None,
-                 seed: int = 42,
-                 noise: float = 0.05,
-                 median_lead_time: int = 10,
-                 status_rates: Optional[dict] = None,
-                 rebook_category: str = "med",
-                 check_in_time_mean: float = -10,
-                 visits_per_year: float = 1.2,
-                 bin_size: int = 5,
-                 lower_cutoff: int = 15,
-                 upper_cutoff: int = 90,
-                 truncated: bool = True,
-                 first_attendance: Optional[float] = None,
-                 age_gender_probs: Optional[pd.DataFrame] = None):
+                 
+        # ============================
+        # 1. Scheduling configuration
+        # ============================
+        date_ranges: Optional[List[Tuple[datetime, datetime]]] = None,
+        ref_date: Optional[datetime] = None,
+        working_days: Optional[List[int]] = None,
+        appointments_per_hour: int = 4,
+        working_hours: Optional[List[Tuple[int, int]]] = None,
+        fill_rate: float = 0.9,
+        booking_horizon: int = 30,
+        median_lead_time: int = 10,
 
-        # Assign configuration parameters with fallbacks
-        self.date_ranges = date_ranges or [(datetime(2015, 1, 1), datetime(2024, 12, 31))]
-        self.working_days = working_days or [0, 1, 2, 3, 4]
-        self.working_hours = working_hours or [(8, 18)]
+        # ============================
+        # 2. Attendance behavior and appointment outcomes
+        # ============================
+        status_rates: Optional[dict] = None,
+        rebook_category: str = "med",
+        check_in_time_mean: float = -10,
+
+        # ============================
+        # 3. Patient visit patterns and turnover
+        # ============================
+        visits_per_year: float = 1.2,
+        first_attendance: Optional[float] = None,
+
+        # ============================
+        # 4. Demographic configuration
+        # ============================
+        bin_size: int = 5,
+        lower_cutoff: int = 15,
+        upper_cutoff: int = 90,
+        truncated: bool = True,
+        age_gender_probs: Optional[pd.DataFrame] = None,
+
+        # ============================
+        # 5. Reproducibility and stochasticity
+        # ============================
+        seed: int = 42,
+        noise: float = 0.1,
+    ):   
+        
+
+        # ============================
+        # VALIDATION: date_ranges
+        # ============================
+        if date_ranges is None:
+            self.date_ranges = [(datetime(2023, 1, 1), datetime(2024, 12, 31))]
+        else:
+            if not isinstance(date_ranges, list) or not all(isinstance(pair, tuple) and len(pair) == 2 for pair in date_ranges):
+                raise ValueError("`date_ranges` must be a list of (datetime, datetime) tuples.")
+            for start, end in date_ranges:
+                if not isinstance(start, datetime) or not isinstance(end, datetime):
+                    raise TypeError("Each element in `date_ranges` must be a (datetime, datetime) tuple.")
+                if start >= end:
+                    raise ValueError(f"Each `date_range` must be in the format (start < end), but got ({start}, {end}).")
+            self.date_ranges = date_ranges
+
+            sorted_ranges = sorted(self.date_ranges, key=lambda x: x[0])
+            for i in range(len(sorted_ranges) - 1):
+                if sorted_ranges[i][1] >= sorted_ranges[i+1][0]:
+                    raise ValueError(f"`date_ranges` has overlapping periods: {sorted_ranges[i]} and {sorted_ranges[i+1]}")
+            
+            for start, end in self.date_ranges:
+                if (end - start).days < 1:
+                    raise ValueError(f"`date_ranges` segment ({start} to {end}) is too short or empty.")
+
+
+        # ============================
+        # VALIDATION: ref_date
+        # ============================
+        if ref_date is not None and not isinstance(ref_date, datetime):
+            raise TypeError("`ref_date` must be a datetime object. Example: datetime(2024, 12, 1)")
+
+        # Default to last day of date_ranges
+        self.ref_date = ref_date or max(end for _, end in self.date_ranges)
+
+        # Must be within date_ranges
+        range_start = min(start for start, _ in self.date_ranges)
+        range_end = max(end for _, end in self.date_ranges)
+
+        if not (range_start <= self.ref_date <= range_end):
+            raise ValueError(
+                f"`ref_date` ({self.ref_date.date()}) must be within the date_ranges "
+                f"({range_start.date()} to {range_end.date()})."
+            )
+
+        # If ref_date + booking_horizon exceeds range_end, extend the last date_range
+        ref_end = self.ref_date + timedelta(days=booking_horizon)
+        if ref_end > range_end:
+            last_start, _ = self.date_ranges[-1]
+            self.date_ranges[-1] = (last_start, ref_end)
+
+
+        # ============================
+        # VALIDATION: working_days
+        # ============================
+        wdays = working_days or [0, 1, 2, 3, 4]
+        if not isinstance(wdays, list) or not all(isinstance(d, int) and 0 <= d <= 6 for d in wdays):
+            raise ValueError("`working_days` must be a list of integers from 0 (Monday) to 6 (Sunday). Example: [0,1,2,3,4]")
+        if not wdays:
+            raise ValueError("`working_days` must not be an empty list. At least one working day is required.")
+        if len(set(wdays)) != len(wdays):
+            raise ValueError("`working_days` contains duplicate entries.")
+        self.working_days = wdays
+
+
+        # ============================
+        # VALIDATION: appointments_per_hour
+        # ============================
+        valid_values = [1, 2, 3, 4, 6]
+        slot_lengths = {v: 60 // v for v in valid_values}
+
+        if not isinstance(appointments_per_hour, int) or appointments_per_hour not in valid_values:
+            allowed = ", ".join([f"{v} ({slot_lengths[v]} min)" for v in valid_values])
+            raise ValueError(
+                f"`appointments_per_hour` must be one of: {allowed}. "
+                "Only values that divide 60 evenly are allowed."
+            )
         self.appointments_per_hour = appointments_per_hour
-        self.fill_rate = fill_rate
+
+
+        # ============================
+        # VALIDATION: working_hours
+        # ============================
+        self.working_hours = working_hours or [(8, 18)]
+
+        if not self.working_hours:
+            raise ValueError("`working_hours` must not be empty.")
+        
+        for i, (start, end) in enumerate(self.working_hours):
+            if not (0 <= start < end <= 24):
+                raise ValueError(f"`working_hours[{i}]` has invalid time range: ({start}, {end}). Must be 0 ≤ start < end ≤ 24.")
+        # Optional: check for overlaps
+        for i in range(len(self.working_hours)):
+            for j in range(i+1, len(self.working_hours)):
+                if max(self.working_hours[i][0], self.working_hours[j][0]) < min(self.working_hours[i][1], self.working_hours[j][1]):
+                    raise ValueError(f"`working_hours[{i}]` and `working_hours[{j}]` overlap. Time blocks must not overlap.")
+                
+        for i, (start, end) in enumerate(self.working_hours):
+            if (end - start) * 60 < 60 / self.appointments_per_hour:
+                raise ValueError(
+                    f"`working_hours[{i}]` does not allow for any slots given `appointments_per_hour = {self.appointments_per_hour}`"
+                )
+
+
+        # ============================
+        # VALIDATION: fill_rate
+        # ============================
+        if not isinstance(fill_rate, (float, int)) or not (0.2 <= fill_rate <= 1.0):
+            raise ValueError("`fill_rate` must be a float between 0.2 and 1.0. Values below 0.2 imply implausibly low utilization.")
+        self.fill_rate = float(fill_rate)
+
+
+        # ============================
+        # VALIDATION: booking_horizon
+        # ============================
+        if not isinstance(booking_horizon, int) or not (0 <= booking_horizon <= 150):
+            raise ValueError("`booking_horizon` must be an integer between 0 and 150 (approx. 5 months).")
         self.booking_horizon = booking_horizon
-        self.ref_date = ref_date or datetime(2024, 12, 1)
-        self.seed = seed
-        self.noise = noise
+
+
+        # ============================
+        # VALIDATION: median_lead_time
+        # ============================
+        if not isinstance(median_lead_time, int) or not (1 <= median_lead_time <= self.booking_horizon):
+            raise ValueError(
+                "`median_lead_time` must be an integer ≥ 1 and ≤ `booking_horizon`. "
+                f"Received median_lead_time={median_lead_time}, booking_horizon={self.booking_horizon}."
+            )
         self.median_lead_time = median_lead_time
 
-        self.status_rates = status_rates or DEFAULT_STATUS_RATES
+        if self.booking_horizon >= 10 and self.median_lead_time < 2:
+            import warnings
+            warnings.warn(
+                "`median_lead_time` is very short compared to `booking_horizon`. "
+                "This may produce unnatural scheduling intervals."
+            )
+
+
+        # ============================
+        # VALIDATION: status_rates
+        # ============================
+        expected_keys = {"attended", "cancelled", "did not attend", "unknown"}
+
+        if status_rates is None:
+            self.status_rates = DEFAULT_STATUS_RATES.copy()
+        else:
+            if not isinstance(status_rates, dict):
+                raise TypeError("`status_rates` must be a dictionary.")
+            if set(status_rates.keys()) != expected_keys:
+                raise ValueError(f"`status_rates` must contain exactly the following keys: {sorted(expected_keys)}.")
+            if not all(isinstance(v, (int, float)) and v >= 0 for v in status_rates.values()):
+                raise ValueError("All values in `status_rates` must be non-negative numbers.")
+            if sum(status_rates.values()) == 0:
+                raise ValueError("The sum of `status_rates` values must be greater than 0.")
+            
+            self.status_rates = status_rates.copy()
+
+        # Normalize to ensure the sum equals 1
         total = sum(self.status_rates.values())
         self.status_rates = {k: v / total for k, v in self.status_rates.items()}
 
-        self.rebook_category = rebook_category
-        if self.rebook_category == "min":
-            self.rebook_ratio = 0
-        elif self.rebook_category == "med":
-            self.rebook_ratio = 0.5
-        elif self.rebook_category == "max":
-            self.rebook_ratio = 1
-        else:
-            raise ValueError("Invalid rebook_category: choose 'min', 'med', or 'max'.")
 
+        # ============================
+        # VALIDATION: rebook_category
+        # ============================
+        valid_rebook_options = {"min", "med", "max"}
+        if rebook_category not in valid_rebook_options:
+            raise ValueError("`rebook_category` must be one of: 'min', 'med', or 'max'.")
+
+        self.rebook_category = rebook_category
+        self.rebook_ratio = {"min": 0, "med": 0.5, "max": 1}[rebook_category]
+
+
+        # ============================
+        # VALIDATION: check_in_time_mean
+        # ============================
+        if not isinstance(check_in_time_mean, (int, float)) or not (-60 <= check_in_time_mean <= 30):
+            raise ValueError(
+                "`check_in_time_mean` must be a number between -60 and +30. "
+                "Negative values mean patients typically arrive early."
+            )
         self.check_in_time_mean = check_in_time_mean
-        self.visits_per_year = visits_per_year
-        self.bin_size = bin_size
+
+
+        # ============================
+        # VALIDATION: visits_per_year
+        # ============================
+        if not isinstance(visits_per_year, (int, float)) or not (0.5 <= visits_per_year <= 10):
+            raise ValueError("`visits_per_year` must be a float between 0.5 and 10. Values outside this range are implausible for outpatient care.")
+        self.visits_per_year = float(visits_per_year)
+
+
+        # ============================
+        # VALIDATION: first_attendance
+        # ============================
+        if first_attendance is not None:
+            if not isinstance(first_attendance, (float, int)) or not (0 <= first_attendance <= 1):
+                raise ValueError("`first_attendance` must be a float between 0 and 1, or None to use default.")
+            self.first_attendance = float(first_attendance)
+        else:
+            self.first_attendance = DEFAULT_FIRST_ATTENDANCE_RATIO
+
+
+        # ============================
+        # VALIDATION: lower_cutoff and upper_cutoff
+        # ============================
+        if not isinstance(lower_cutoff, int) or not (0 <= lower_cutoff <= 100):
+            raise ValueError("`lower_cutoff` must be an integer between 0 and 100.")
+        if not isinstance(upper_cutoff, int) or not (lower_cutoff < upper_cutoff <= 120):
+            raise ValueError("`upper_cutoff` must be an integer greater than `lower_cutoff`, and no more than 120.")
         self.lower_cutoff = lower_cutoff
         self.upper_cutoff = upper_cutoff
+
+        # ============================
+        # VALIDATION: bin_size
+        # ============================
+        if not isinstance(bin_size, int) or not (1 <= bin_size <= 20):
+            raise ValueError("`bin_size` must be an integer between 1 and 20.")
+        self.bin_size = bin_size
+
+        # ============================
+        # VALIDATION: truncated
+        # ============================
+        if not isinstance(truncated, bool):
+            raise TypeError("`truncated` must be a boolean.")
         self.truncated = truncated
-        self.first_attendance = first_attendance if first_attendance is not None else DEFAULT_FIRST_ATTENDANCE_RATIO
-        self.age_gender_probs = pd.DataFrame(age_gender_probs or DEFAULT_AGE_GENDER_PROBS)
+
+        # ============================
+        # VALIDATION: age_gender_probs
+        # ============================
+        if age_gender_probs is not None:
+            required_cols = {"age_yrs", "total_male", "total_female"}
+            if not isinstance(age_gender_probs, pd.DataFrame):
+                raise TypeError("`age_gender_probs` must be a pandas DataFrame or None.")
+            if not required_cols.issubset(age_gender_probs.columns):
+                raise ValueError("`age_gender_probs` must contain columns: 'age_yrs', 'total_male', and 'total_female'.")
+            self.age_gender_probs = age_gender_probs.copy()
+        else:
+            self.age_gender_probs = pd.DataFrame(DEFAULT_AGE_GENDER_PROBS.copy())
+
+
+        # ============================
+        # VALIDATION: seed
+        # ============================
+        if not isinstance(seed, int) or seed < 0:
+            raise ValueError("`seed` must be a non-negative integer.")
+        self.seed = seed
+
+
+        # ============================
+        # VALIDATION: noise
+        # ============================
+        if not isinstance(noise, (int, float)) or not (0 <= noise <= 0.5):
+            raise ValueError("`noise` must be a float between 0 and 0.5. Larger values may produce unstable or unrealistic variability.")
+        self.noise = float(noise)
+
+
 
         # Initialize RNG and Faker
         self.fake = Faker()
@@ -238,17 +515,10 @@ class AppointmentScheduler:
         self.patients_df = pd.DataFrame()
         self.patient_id_counter = 1
 
-        # Ensure that 'ref_date + booking_horizon' is inside 'date_ranges'; if not, extend 'date_ranges'
-        if self.ref_date + timedelta(days=self.booking_horizon) > max(end for _, end in self.date_ranges):
-            self.date_ranges[-1] = (self.date_ranges[-1][0], self.ref_date + timedelta(days=self.booking_horizon))
-
         self.total_days = sum((end - start).days + 1 for start, end in self.date_ranges)
         self.slots_per_day = len(self.working_hours) * self.appointments_per_hour * (self.working_hours[0][1] - self.working_hours[0][0])
         self.working_days_count = sum(1 for date_day in pd.date_range(self.date_ranges[0][0], self.date_ranges[-1][1]) if date_day.weekday() in self.working_days)
         self.slots_per_week = self.slots_per_day * len(self.working_days)
-
-        self.patients_df = pd.DataFrame()
-        self.patient_id_counter = 1
 
 
 

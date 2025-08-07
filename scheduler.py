@@ -557,48 +557,6 @@ class AppointmentScheduler:
         - is_available : bool
             True if the slot is available for booking. All slots are initialized as available.
         """
-        slots = []
-        slot_id_counter = 1
-        max_digits = len(str(self.total_days * self.slots_per_day)) + 1
-
-        for start_date, end_date in self.date_ranges:
-            for date_day in pd.date_range(start=start_date, end=end_date):
-                if date_day.weekday() in self.working_days:
-                    for start_hour, end_hour in self.working_hours:
-                        for hour in range(start_hour, end_hour):
-                            for m in range(0, 60, 60 // self.appointments_per_hour):
-                                time_slot = datetime.combine(date_day, time(hour=hour, minute=m))
-                                slots.append({
-                                    "slot_id": str(slot_id_counter).zfill(max_digits),
-                                    "appointment_date": date_day.normalize(),
-                                    "appointment_time": time_slot.time(),
-                                    "is_available": True
-                                })
-                                slot_id_counter += 1
-        slots_df = pd.DataFrame(slots)
-        slots_df["appointment_date"] = pd.to_datetime(slots_df["appointment_date"])
-        return slots_df
-
-    def generate_slots_optimized(self) -> pd.DataFrame:
-        """
-        Generate all available appointment slots based on configured working hours, days, and date ranges.
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame with one row per slot. Each slot corresponds to a specific time block on a working day.
-
-        Columns
-        -------
-        - slot_id : str
-            Unique identifier for the slot (zero-padded).
-        - appointment_date : datetime
-            Date of the appointment slot.
-        - appointment_time : time
-            Start time of the slot.
-        - is_available : bool
-            True if the slot is available for booking. All slots are initialized as available.
-        """
 
         # Get all working dates across date_ranges
         all_working_dates = []
@@ -624,6 +582,7 @@ class AppointmentScheduler:
         slots_df["slot_id"] = [str(i).zfill(max_digits) for i in range(1, total_slots + 1)]
         slots_df["is_available"] = True
         slots_df["appointment_date"] = pd.to_datetime(slots_df["appointment_date"])
+        slots_df = slots_df[["slot_id", "appointment_date", "appointment_time", "is_available"]]
 
         return slots_df
 
